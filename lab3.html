@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>Giám Sát Người Chạy - FreeRTOS</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #eef2f5; text-align: center; margin: 0; padding: 20px; }
+    h2 { color: #333; margin-bottom: 5px; text-transform: uppercase; }
+    .status { font-size: 15px; font-weight: bold; margin-bottom: 20px; padding: 10px; border-radius: 5px; background: #fff; display: inline-block; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+    .container { display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; margin-bottom: 20px; }
+    .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 8px rgba(0,0,0,0.08); width: 220px; }
+    .card-title { font-size: 16px; color: #555; font-weight: 600; }
+    .temp-val, .press-val, .alt-val { font-size: 34px; font-weight: bold; color: #007bff; margin-top: 10px; transition: color 0.3s; }
+    .control-panel { margin: 20px 0; }
+    button { padding: 12px 28px; font-size: 16px; font-weight: bold; margin: 0 10px; cursor: pointer; border: none; border-radius: 8px; color: white; transition: 0.2s; }
+    .btn-off { background: #6c757d; }
+    .btn-on { background: #28a745; box-shadow: 0 0 10px rgba(40,167,69,0.5); }
+    .charts { display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; max-width: 1100px; margin: 0 auto; }
+    .chart-box { background: white; padding: 15px; border-radius: 12px; width: 46%; min-width: 380px; box-shadow: 0 4px 8px rgba(0,0,0,0.08); }
+  </style>
+</head>
+<body>
+
+  <h2>Giám Sát Người Chạy (FreeRTOS)</h2>
+  <div id="mqtt-status" class="status" style="color: #d39e00;">🔄 Đang kết nối tới MQTT Broker...</div>
+
+  <div class="container">
+    <div class="card">
+      <div class="card-title">Nhiệt độ (°C)</div>
+      <div class="temp-val">--</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Áp suất (Pa)</div>
+      <div class="press-val">--</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Độ cao (m)</div>
+      <div class="alt-val">--</div>
+    </div>
+  </div>
+
+  <div class="control-panel">
+    <button id="btnLed" class="btn-off" onclick="toggleDevice('led')">ĐÈN LED: TẮT</button>
+    <button id="btnBuzzer" class="btn-off" onclick="toggleDevice('buzzer')">LOA: TẮT</button>
+  </div>
+
+  <div class="charts">
+    <div class="chart-box"><canvas id="tempChart"></canvas></div>
+    <div class="chart-box"><canvas id="altChart"></canvas></div>
+  </div>
+
+  <script>
+    // 1. Khởi tạo Biểu đồ
+    const createRealtimeChart = (canvasId, label, borderColor) => {
+      return new Chart(document.getElementById(canvasId), {
+        type: 'line',
+        data: { labels: [], datasets: [{ label: label, data: [], borderColor: borderColor, tension: 0.2, fill: false }] },
+        options: { animation: false, scales: { y: { beginAtZero: false } } }
+      });
+    };
+    const tempChart = createRealtimeChart('tempChart', 'Nhiệt độ (°C)', '#dc3545');
+    const altChart  = createRealtimeChart('altChart', 'Độ cao (m)', '#007bff');
+
+    // 2. Kết nối MQTT bảo mật (WSS - Port 8084)
+    const clientID = "WebRunner_RTOS_" + Math.random().toString(16).substr(2, 8);
+    // Lưu ý: Dùng port 8084 với kết nối bảo mật để không bị trình duyệt chặn
+    const client = new Paho.MQTT.Client("broker.emqx.io", 8084, clientID);
+
+    client.onConnectionLost = function (responseObject) {
+      document.getElementById("mqtt-status").innerText = "❌ Mất kết nối: " + responseObject.errorMessage;
+      document.getElementById("mqtt-status").style.color = "#dc3545";
+    };
+
+    client.onMessageArrived = function (message) {
+      if (message.destinationName === "runner_hq2026/data") {
+        try {
+          const data = JSON.parse(message.payloadString);
+
+          // Cập nhật số liệu
+          document.querySelector(".temp-val").innerText  = data.temp;
+          document.querySelector(".press-val").innerText = data.pressure;
+          document.querySelector(".alt-val").innerText   = data.altitude;
+
+          // Xử lý đổi màu khi có cảnh báo (Kiểm tra cả dạng boolean và dạng chuỗi)
+          const isAlert = (data.alert === true || data.alert === "true");
+          const alertColor = isAlert ? "#dc3545" : "#007bff";
+          document.querySelector(".temp-val").style.color = alertColor;
+          document.querySelector(".alt-val").style.color  = alertColor;
+
+          // Cập nhật biểu đồ (Giữ 15 điểm gần nhất)
+          const now = new Date().toLocaleTimeString();
+          if (tempChart.data.labels.length >= 15) {
+            tempChart.data.labels.shift(); tempChart.data.datasets[0].data.shift();
+            altChart.data.labels.shift();  altChart.data.datasets[0].data.shift();
+          }
+
+          tempChart.data.labels.push(now); tempChart.data.datasets[0].data.push(data.temp);
+          altChart.data.labels.push(now);  altChart.data.datasets[0].data.push(data.altitude);
+
+          tempChart.update();
+          altChart.update();
+        } catch (e) {
+          console.error("Lỗi dữ liệu JSON từ ESP32:", e);
+        }
+      }
+    };
+
+    // Bắt đầu kết nối
+    client.connect({
+      useSSL: true, // Bắt buộc bật SSL/TLS cho port 8084
+      onSuccess: function () {
+        const statusEl = document.getElementById("mqtt-status");
+        statusEl.innerText = "✅ Đã kết nối đồng bộ với hệ thống FreeRTOS!";
+        statusEl.style.color = "#28a745";
+        client.subscribe("runner_hq2026/data");
+      },
+      onFailure: function (err) {
+        const statusEl = document.getElementById("mqtt-status");
+        statusEl.innerText = "❌ Lỗi kết nối MQTT: " + err.errorMessage;
+        statusEl.style.color = "#dc3545";
+      }
+    });
+
+    // 3. Xử lý nút bấm điều khiển
+    let deviceState = { led: false, buzzer: false };
+    function toggleDevice(device) {
+      deviceState[device] = !deviceState[device];
+      const payload = deviceState[device] ? "ON" : "OFF";
+
+      // Gửi lệnh xuống ESP32
+      const message = new Paho.MQTT.Message(payload);
+      message.destinationName = "runner_hq2026/control/" + device;
+      client.send(message);
+
+      // Đổi trạng thái giao diện nút bấm
+      const btn = document.getElementById(device === 'led' ? 'btnLed' : 'btnBuzzer');
+      const name = device === 'led' ? 'ĐÈN LED: ' : 'LOA: ';
+      btn.innerText = name + (deviceState[device] ? 'BẬT' : 'TẮT');
+      btn.className = deviceState[device] ? 'btn-on' : 'btn-off';
+    }
+  </script>
+</body>
+</html>
